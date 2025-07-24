@@ -1,27 +1,30 @@
-import math
+from torch import Tensor
 import torch
 import torch.nn as nn
 import torch.nn.utils.parametrize as P
 from models.multi_conv import MultiConv2d
+from models.lifting_conv import SE2LiftMultiConv2d
 from models.spline_module import LinearSpline, clip_activation
-import time
 
 
 class WCvxConvNet(nn.Module):
     def __init__(
         self,
-        param_multi_conv,
+        param_conv_layer,
         param_spline_activation,
         param_spline_scaling,
         rho_wcvx=1,
     ):
-
         super().__init__()
 
-        self.num_channels = param_multi_conv["num_channels"][-1]
+        if param_conv_layer["class"] == "MultiConv2d":
+            self.conv_layer = MultiConv2d(**param_conv_layer["kwargs"])
+        elif param_conv_layer["class"] == "SE2LiftMultiConv2d":
+            self.conv_layer = SE2LiftMultiConv2d(**param_conv_layer["kwargs"])
+
+        self.num_channels = param_conv_layer["kwargs"]["num_channels"][-1]
         # 1 - multi-convolutionnal layers
-        print("Multi convolutionnal layer: ", param_multi_conv)
-        self.conv_layer = MultiConv2d(**param_multi_conv)
+        print("Convolution layer config: ", param_conv_layer)
 
         # 2 - activation functions (gradient of the potential)
         # a - increasing part, gradient of the convex part of the potential
@@ -56,14 +59,18 @@ class WCvxConvNet(nn.Module):
 
     @property
     def device(self):
-        return self.conv_layer.conv_layers[0].weight.device
+        return self.conv_layer.device
 
-    def get_scaling(self, sigma=None):
+    def get_scaling(self, sigma: None | Tensor = None):
         if self.scaling is None:
+            assert isinstance(sigma, Tensor)
             eps = 1e-5
-            return torch.exp(
+            scaling = torch.exp(
                 self.spline_scaling(torch.tile(sigma, (1, self.num_channels, 1, 1)))
             ) / (sigma + eps)
+            if isinstance(self.conv_layer, SE2LiftMultiConv2d):
+                scaling = scaling.unsqueeze(1)
+            return scaling
         else:
             return self.scaling
 
@@ -82,6 +89,7 @@ class WCvxConvNet(nn.Module):
             scaling = self.get_scaling(sigma)
         else:
             scaling = 1
+
         x = x * scaling
         # apply activation
         y = self.get_mu() * self.activation_cvx(
@@ -92,12 +100,13 @@ class WCvxConvNet(nn.Module):
 
         return y
 
-    def grad_activation(self, x, sigma=None):
+    def grad_activation(self, x: Tensor, sigma: Tensor | None = None):
         scaling = self.get_scaling(sigma)
         x = x * scaling
-        return self.get_mu() * self.activation_cvx.derivative(
-            x
-        ) - self.rho_wcvx * self.activation_ccv.derivative(x)
+        d_cvx = self.activation_cvx.derivative(x)  # type: ignore
+        d_ccv = self.activation_ccv.derivative(x)  # type: ignore
+
+        return self.get_mu() * d_cvx - self.rho_wcvx * d_ccv
 
     def integrate_activation(self, x, sigma=None, skip_scaling=False):
 
@@ -159,10 +168,10 @@ class WCvxConvNet(nn.Module):
         return 1 / (1 + self.get_mu()) * (v + self.hvp(x, v, sigma=sigma))
 
     def update_integrated_params(self):
-        self.activation_cvx.hyper_param_to_device()
-        self.activation_ccv.hyper_param_to_device()
-        self.activation_cvx.update_integrated_coeff()
-        self.activation_ccv.update_integrated_coeff()
+        self.activation_cvx.hyper_param_to_device()  # type: ignore
+        self.activation_ccv.hyper_param_to_device()  # type:ignore
+        self.activation_cvx.update_integrated_coeff()  # type:ignore
+        self.activation_ccv.update_integrated_coeff()  # type: ignore
 
     def cost(self, x, sigma, use_cached_wx=False):
         s = x.shape
@@ -186,19 +195,21 @@ class WCvxConvNet(nn.Module):
         activation_cvx = self.activation_cvx
         activation_ccv = self.activation_ccv
 
-        activation_cvx.hyper_param_to_device()
-        activation_ccv.hyper_param_to_device()
+        activation_cvx.hyper_param_to_device()  # type:ignore
+        activation_ccv.hyper_param_to_device()  # type:ignore
 
-        self.activation_cvx = self.activation_cvx.get_clip_equivalent()
+        self.activation_cvx = self.activation_cvx.get_clip_equivalent()  # type:ignore
 
         grid_tensor = torch.linspace(
-            activation_cvx.x_min.item(),
-            activation_cvx.x_max.item(),
-            activation_cvx.num_knots,
-            device=self.device,
+            activation_cvx.x_min.item(),  # type:ignore
+            activation_cvx.x_max.item(),  # type:ignore
+            activation_cvx.num_knots,  # type:ignore
+            device=self.device,  # type:ignore
         ).expand((activation_cvx.num_activations, activation_cvx.num_knots))
 
-        coeff_proj = activation_ccv.projected_coefficients.clone().to(self.device)
+        coeff_proj = activation_ccv.projected_coefficients.clone().to(  # type:ignore
+            self.device  # type:ignore
+        )  # type:ignore
         i0 = torch.arange(0, coeff_proj.shape[0]).to(coeff_proj.device)
         x1 = grid_tensor[i0, 1].view(1, -1, 1, 1)
         y1 = coeff_proj[i0, 1].view(1, -1, 1, 1)

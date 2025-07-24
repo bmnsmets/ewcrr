@@ -84,25 +84,19 @@ def build_model(config):
     # shared spline
     param_spline_activation["num_activations"] = 1
 
-    # 2- Multi convolution layer
-    param_multi_conv = config["multi_convolution"]
-    if len(param_multi_conv["num_channels"]) != (
-        len(param_multi_conv["size_kernels"]) + 1
-    ):
-        raise ValueError(
-            "Number of channels specified is not compliant with number of kernel sizes"
-        )
+    # 2- convolution layer
+    param_conv_layer = config["conv_layer"]
 
     param_spline_scaling = config["spline_scaling"]
     param_spline_scaling["clamp"] = False
     param_spline_scaling["x_min"] = config["noise_range"][0]
     param_spline_scaling["x_max"] = config["noise_range"][1]
-    param_spline_scaling["num_activations"] = config["multi_convolution"][
+    param_spline_scaling["num_activations"] = param_conv_layer["kwargs"][
         "num_channels"
     ][-1]
 
     model = WCvxConvNet(
-        param_multi_conv=param_multi_conv,
+        param_conv_layer=param_conv_layer,
         param_spline_activation=param_spline_activation,
         param_spline_scaling=param_spline_scaling,
         rho_wcvx=config["rho_wcvx"],

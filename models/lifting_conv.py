@@ -1,6 +1,5 @@
 import torch
 import torch.nn as nn
-from multi_conv import MultiConv2d
 from torch import Tensor
 import math
 import torch.nn.functional as F
@@ -46,12 +45,12 @@ def fuse_kernels_2d(ws: list[Tensor] | torch.nn.ParameterList) -> Tensor:
     return w.transpose(0, 1).contiguous()  # [Cout,C0,H,W]
 
 
-class SE2Lifting(nn.Module):
+class SE2LiftMultiConv2d(nn.Module):
 
     def __init__(
         self,
         num_channels: tuple[int, ...] = (1, 64),
-        kernel_size: int | tuple[int, ...] = (5,),
+        size_kernels: int | tuple[int, ...] = (5,),
         orientations: int = 16,
         device=None,
         dtype=None,
@@ -67,17 +66,17 @@ class SE2Lifting(nn.Module):
         self.orientations = orientations
         self.zero_mean = zero_mean
         self.sn_size = sn_size
-        if isinstance(kernel_size, int):
-            kernel_size = (kernel_size,) * (len(num_channels) - 1)
-        assert len(kernel_size) == len(num_channels) - 1
-        assert all(size > 0 for size in kernel_size)
-        eff_kernel_size = kernel_size[0]
-        for size in kernel_size[1:]:
+        if isinstance(size_kernels, int):
+            size_kernels = (size_kernels,) * (len(num_channels) - 1)
+        assert len(size_kernels) == len(num_channels) - 1
+        assert all(size > 0 for size in size_kernels)
+        eff_kernel_size = size_kernels[0]
+        for size in size_kernels[1:]:
             eff_kernel_size += 2 * (size // 2)
 
-        self.kernel_size = kernel_size
+        self.size_kernels = size_kernels
         self.eff_kernel_size = eff_kernel_size
-        self.padding_total = sum(size // 2 for size in kernel_size)
+        self.padding_total = sum(size // 2 for size in size_kernels)
 
         # grid locations for resampling rotated version of the mother kernels
         grid = rotation_resampling_grid(
@@ -90,7 +89,7 @@ class SE2Lifting(nn.Module):
         self.register_buffer("mask", mask.to(device))
 
         # caching the spectral norm estimate
-        self.L = torch.ones(1, requires_grad=True, device=device)
+        self.L = torch.ones(1, device=device)
 
         self.weights = nn.ParameterList(
             [
@@ -98,7 +97,7 @@ class SE2Lifting(nn.Module):
                     (num_channels[i + 1], num_channels[i], size, size),
                     **factory_kwargs,
                 )
-                for i, size in enumerate(kernel_size)
+                for i, size in enumerate(size_kernels)
             ]
         )
 
@@ -146,7 +145,7 @@ class SE2Lifting(nn.Module):
         return self.convolution(x)
 
     def convolution(self, x: Tensor):
-        x = x / torch.sqrt(self.L)  # [B,Cin,H,W]
+        x = x / torch.sqrt(self.L.to(x.device))  # [B,Cin,H,W]
         w = self.sample_kernels()  # [NOr,Cout,Cin,kH,kH]
         w = w.view(-1, *w.shape[-3:])  # [NOr*Cout,Cin,kH,kH]
         y = F.conv2d(
@@ -156,7 +155,7 @@ class SE2Lifting(nn.Module):
         return y  # [B,NOr,Cout,H,W]
 
     def transpose(self, x: Tensor):
-        x = x / torch.sqrt(self.L)  # [B,Nor,Cout,H,W]
+        x = x / torch.sqrt(self.L.to(x.device))  # [B,Nor,Cout,H,W]
         x = x.reshape(x.size(0), -1, x.size(-2), x.size(-1))  # [B,Nor*Cout,H,W]
         w = self.sample_kernels()  # [NOr,Cout,Cin,kH,kH]
         w = w.view(-1, *w.shape[-3:])  # [NOr*Cout,Cin,kH,kH]
@@ -177,20 +176,21 @@ class SE2Lifting(nn.Module):
         n_steps: int = 1000,
     ) -> Tensor:
         if mode == "Fourier":
-            self.L = self.spectrum().abs().max()
+            with torch.no_grad():
+                self.L = self.spectrum().abs().max()
         elif mode == "power_method":
             u = torch.randn((1, 1, self.sn_size, self.sn_size), device=self.device)
             with torch.no_grad():
                 for _ in range(n_steps):
                     u = self.transpose(self.convolution(u))
                     u = u / torch.linalg.norm(u)
-            self.L = torch.linalg.norm(self.transpose(self.convolution(u)))
+                self.L = torch.linalg.norm(self.transpose(self.convolution(u)))
 
         return self.L
 
     def __repr__(self):
         s1 = f"num_channels={self.num_channels}"
-        s2 = f"kernel_size={self.kernel_size}"
+        s2 = f"kernel_size={self.size_kernels}"
         s3 = f"orientations={self.orientations}"
         return f"{self.__class__.__name__}({s1}, {s2}, {s3})"
 
@@ -198,7 +198,9 @@ class SE2Lifting(nn.Module):
 if __name__ == "__main__":
     import matplotlib.pyplot as plt
 
-    m = SE2Lifting(num_channels=(1, 2, 4, 8), kernel_size=(5, 5, 5), orientations=16)
+    m = SE2LiftMultiConv2d(
+        num_channels=(1, 2, 4, 8), size_kernels=(5, 5, 5), orientations=16
+    )
 
     with torch.no_grad():
         m.weights[0][0, 0] = 0
