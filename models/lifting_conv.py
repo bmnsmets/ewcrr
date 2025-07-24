@@ -200,11 +200,11 @@ if __name__ == "__main__":
 
     m = SE2Lifting(num_channels=(1, 2, 4, 8), kernel_size=(5, 5, 5), orientations=16)
 
-    # with torch.no_grad():
-    #     m.weights[0][0, 0] = 0
-    #     m.weights[0][0, 0, 2, 2:] = 1
-    #     m.weights[1][0, 0] = 0
-    #     m.weights[1][0, 0, 1:3, 1:3] = 1
+    with torch.no_grad():
+        m.weights[0][0, 0] = 0
+        m.weights[0][0, 0, 2, 2:] = 1
+        m.weights[1][0, 0] = 0
+        m.weights[1][0, 0, 1:3, 1:3] = 1
     k = m.sample_kernels()
     for i in range(m.orientations // 2 + 1):
         f = k[i, 0, 0].detach()

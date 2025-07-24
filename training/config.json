@@ -1,5 +1,6 @@
 {
     "exp_name": "WCRR-CNN",
+    "model": "WCvxConvNet",
     "logging_info": {
         "log_batch": 500,
         "log_dir": "../trained_models/test/"
@@ -30,7 +31,6 @@
             "mu": 0.05,
             "spline_scaling": 0.005
         }
-        
     },
     "spline_activation": {
         "num_knots": 101,
