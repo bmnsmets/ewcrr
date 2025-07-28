@@ -1,22 +1,25 @@
 {
-    "exp_name": "WCRR-CNN",
-    "model": "WCvxConvNet",
+    "exp_name": "WCRR-SE2Lift-CNN",
     "logging_info": {
         "log_batch": 500,
         "log_dir": "../trained_models/test/"
     },
-    "multi_convolution": {
-        "num_channels": [
-            1,
-            4,
-            8,
-            60
-        ],
-        "size_kernels": [
-            5,
-            5,
-            5
-        ]
+    "conv_layer": {
+        "class": "SE2LiftMultiConv2d",
+        "kwargs": {
+            "num_channels": [
+                1,
+                4,
+                8,
+                60
+            ],
+            "size_kernels": [
+                5,
+                5,
+                5
+            ],
+            "orientations": 1
+        }
     },
     "noise_range": [
         0,

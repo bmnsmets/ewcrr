@@ -197,16 +197,15 @@ class Trainer:
                 / (data.shape[0])
                 * (40 / data.shape[2]) ** 2
             )
-
             loss.backward()
 
             self.optimizer.step()
 
-            log["loss"] = loss.item()
+            log["loss"] = loss.detach().item()
             log["forward_mean_iter"] = self.denoise.forward_niter_mean
             log["forward_max_iter"] = self.denoise.forward_niter_max
             log["backward_iter"] = self.denoise.backward_niter
-            log["conv_spectral_norm"] = self.model.conv_layer.L
+            log["conv_spectral_norm"] = self.model.conv_layer.L.detach().item()
 
             self.wrt_step = self.batch_seen
             self.write_scalars_tb(log)

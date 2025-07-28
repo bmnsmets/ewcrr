@@ -47,7 +47,19 @@ class WCvxConvNet(nn.Module):
         # 4 - scaling parameter to add some flexibility to the activation accross channels and noise levels
         self.spline_scaling = LinearSpline(**param_spline_scaling)  # type: ignore
 
-        self.num_params = sum(p.numel() for p in self.parameters())
+        self.num_params = sum(
+            sum(p.numel() for p in m.parameters())
+            for m in [
+                self.activation_cvx,
+                self.activation_ccv,
+                self.spline_scaling,
+            ]
+        )
+        self.num_params += self.mu_.numel()
+        if isinstance(self.conv_layer, SE2LiftMultiConv2d):
+            self.num_params += self.conv_layer.num_parameters()
+        else:
+            self.num_params += sum(p.numel() for p in self.conv_layer.parameters())
 
         # to cache the scaling and mu
         self.scaling = None
@@ -68,8 +80,8 @@ class WCvxConvNet(nn.Module):
             scaling = torch.exp(
                 self.spline_scaling(torch.tile(sigma, (1, self.num_channels, 1, 1)))
             ) / (sigma + eps)
-            if isinstance(self.conv_layer, SE2LiftMultiConv2d):
-                scaling = scaling.unsqueeze(1)
+            # if isinstance(self.conv_layer, SE2LiftMultiConv2d):
+            #     scaling = scaling.unsqueeze(1)
             return scaling
         else:
             return self.scaling
@@ -141,7 +153,6 @@ class WCvxConvNet(nn.Module):
         return y
 
     def grad_denoising(self, x, x_noisy, sigma=None, cache_wx=False, lmbd=1):
-
         return (
             1
             / (1 + lmbd * self.get_mu())
@@ -164,7 +175,6 @@ class WCvxConvNet(nn.Module):
         return y
 
     def hvp_denoising(self, x, v, sigma=None):
-
         return 1 / (1 + self.get_mu()) * (v + self.hvp(x, v, sigma=sigma))
 
     def update_integrated_params(self):
