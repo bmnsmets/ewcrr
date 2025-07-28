@@ -13,10 +13,10 @@ def rotation_resampling_grid(
     cos, sin = thetas.cos(), thetas.sin()
 
     transforms = torch.zeros((orientations, 2, 3))
-    transforms[:, 0, 0] = cos
+    transforms[:, 0, 0] = -cos
     transforms[:, 0, 1] = -sin
     transforms[:, 1, 0] = sin
-    transforms[:, 1, 1] = cos
+    transforms[:, 1, 1] = -cos
 
     grid = torch.nn.functional.affine_grid(
         transforms,
@@ -35,14 +35,6 @@ def rotation_mask(size: int) -> Tensor:
     )
     r = torch.sqrt(grid_x.pow(2) + grid_y.pow(2))
     return r <= 1 + 1 / size
-
-
-def fuse_kernels_2d(ws: list[Tensor] | torch.nn.ParameterList) -> Tensor:
-    w = ws[0].transpose(0, 1)  # [C0,C1,H0,W0]
-    for v in ws[1:]:  # [Cn+1,Cn,Hn,Wn]
-        kh, kw = v.shape[-2:]
-        w = F.conv2d(w, v, padding=(kh - 1, kw - 1))
-    return w.transpose(0, 1).contiguous()  # [Cout,C0,H,W]
 
 
 class SE2LiftMultiConv2d(nn.Module):
@@ -119,7 +111,7 @@ class SE2LiftMultiConv2d(nn.Module):
 
     def reset_parameters(self) -> None:
         for w in self.weights:
-            torch.nn.init.kaiming_uniform_(w, a=math.sqrt(5) * math.sqrt(4 / math.pi))
+            torch.nn.init.kaiming_uniform_(w, a=math.sqrt(4))
             with torch.no_grad():
                 w.mul_(rotation_mask(w.size(-1)).to(w.device))
 
@@ -129,25 +121,27 @@ class SE2LiftMultiConv2d(nn.Module):
             n += w.numel() * rotation_mask(sz).sum().item() // (sz**2)
         return n
 
-    def _fuse_filters(self) -> Tensor:
+    def _fuse_2d_filters(self) -> Tensor:
         assert isinstance(self.dirac, Tensor) and isinstance(self.mask, Tensor)
         filters = self.dirac
-        ws = self.weights
+        ws = [w * rotation_mask(w.size(-1)).to(w.device) for w in self.weights]
         if self.zero_mean:
-            ws0 = ws[0] - torch.mean(ws[0], dim=(1, 2, 3)).view(ws[0].size(0), 1, 1, 1)
-            ws = [ws0, *ws[1:]]
+            ws0 = ws[0]  # [C1,C0,H,W]
+            mean0 = torch.sum(ws0, dim=(1, 2, 3)) / rotation_mask(
+                ws0.size(-1)
+            ).sum().to(
+                ws0.device
+            )  # [C1]
+            ws0 = ws0 - mean0.view(ws0.size(0), 1, 1, 1)
+            ws = [ws0 * rotation_mask(ws0.size(-1)).to(ws0.device), *ws[1:]]
         for w in ws:
             filters = F.conv2d(filters, w, bias=None)
         return filters * self.mask
 
-    def _sample_kernels(self) -> Tensor:
+    def _sample_filter_stack(self) -> Tensor:
         assert isinstance(self.mask, Tensor)
         assert isinstance(self.grid, Tensor)
-        ws = self.weights
-        if self.zero_mean:
-            ws0 = ws[0] - torch.mean(ws[0], dim=(1, 2, 3)).view(ws[0].size(0), 1, 1, 1)
-            ws = [ws0, *ws[1:]]
-        w = self._fuse_filters()
+        w = self._fuse_2d_filters()
         ksize = w.shape[-2:]
         w = w.view(1, -1, *ksize)  # [1,Cn*C0,H,W]
         w = w.expand(self.orientations, -1, -1, -1)  # [NOr,Cn*C0,H,W]
@@ -168,7 +162,7 @@ class SE2LiftMultiConv2d(nn.Module):
     def convolution(self, x: Tensor):
         assert isinstance(self.L, Tensor)
         x = x / torch.sqrt(self.L)  # [B,Cin,H,W]
-        w = self._sample_kernels()  # [NOr,Cout,Cin,kH,kH]
+        w = self._sample_filter_stack()  # [NOr,Cout,Cin,kH,kH]
         w = w.view(-1, *w.shape[-3:])  # [NOr*Cout,Cin,kH,kH]
         y = F.conv2d(
             x, w, bias=None, padding=(self.eff_kernel_size // 2)
@@ -180,7 +174,7 @@ class SE2LiftMultiConv2d(nn.Module):
         assert isinstance(self.L, Tensor)
         x = x / torch.sqrt(self.L)  # [B,Nor,Cout,H,W]
         x = x.reshape(x.size(0), -1, x.size(-2), x.size(-1))  # [B,Nor*Cout,H,W]
-        w = self._sample_kernels()  # [NOr,Cout,Cin,kH,kH]
+        w = self._sample_filter_stack()  # [NOr,Cout,Cin,kH,kH]
         w = w.view(-1, *w.shape[-3:])  # [NOr*Cout,Cin,kH,kH]
         y = F.conv_transpose2d(x, w, bias=None, padding=(self.eff_kernel_size // 2))
         return y  # [B,Cin,H,W]
@@ -232,7 +226,7 @@ if __name__ == "__main__":
     #     m.weights[0][0, 0, 2, 2:] = 1
     #     m.weights[1][0, 0] = 0
     #     m.weights[1][0, 0, 1:3, 1:3] = 1
-    k = m._sample_kernels()
+    k = m._sample_filter_stack()
     from multi_conv import MultiConv2d
 
     n = MultiConv2d(num_channels=(1, 4, 8, 60), size_kernels=(5, 5, 5))
@@ -245,12 +239,10 @@ if __name__ == "__main__":
 
     for pm, pn in zip(m.parameters(), n.parameters()):
         with torch.no_grad():
-            pm.copy_(pn)
-
-    print([p1.allclose(p2) for p1, p2 in zip(m.parameters(), n.parameters())])
+            pn.copy_(pm)
 
     k1 = m.get_filters().detach()[0, 0]
-    k2 = m.get_filters().detach()[0, 0]
+    k2 = n.get_filters().detach()[0, 0]
     v = max(k1.abs().max().item(), k2.abs().max().item())
     plt.imshow(k1, cmap="RdBu", vmin=-v, vmax=v)
     plt.colorbar()
