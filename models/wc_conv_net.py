@@ -2,6 +2,11 @@ from torch import Tensor
 import torch
 import torch.nn as nn
 import torch.nn.utils.parametrize as P
+
+import sys
+
+sys.path.append("..")
+
 from models.multi_conv import MultiConv2d
 from models.lifting_conv import SE2LiftMultiConv2d
 from models.spline_module import LinearSpline, clip_activation
@@ -78,15 +83,13 @@ class WCvxConvNet(nn.Module):
             assert isinstance(sigma, Tensor)
             eps = 1e-5
             scaling = torch.exp(
-                self.spline_scaling(torch.tile(sigma, (1, self.num_channels, 1, 1)))
-            ) / (sigma + eps)
-            # if isinstance(self.conv_layer, SE2LiftMultiConv2d):
-            #     scaling = scaling.unsqueeze(1)
+                self.spline_scaling(torch.tile(sigma[:, None], (1, self.num_channels)))
+            ) / (sigma[:, None] + eps)
             return scaling
         else:
             return self.scaling
 
-    def cache_scaling(self, sigma=None):
+    def cache_scaling(self, sigma: Tensor):
         self.scaling = self.get_scaling(sigma)
 
     def clear_scaling(self):
@@ -95,10 +98,11 @@ class WCvxConvNet(nn.Module):
     def get_mu(self):
         return self.mu_.exp()
 
-    def activation(self, x, sigma=None, skip_scaling=False):
+    def activation(self, x, sigma: None | Tensor = None, skip_scaling: bool = False):
         # get scaling, which depends on sigma and on the channel
         if not skip_scaling:
             scaling = self.get_scaling(sigma)
+            scaling = scaling[:, :, *(None,) * (x.ndim - 2)]
         else:
             scaling = 1
 
@@ -114,6 +118,7 @@ class WCvxConvNet(nn.Module):
 
     def grad_activation(self, x: Tensor, sigma: Tensor | None = None):
         scaling = self.get_scaling(sigma)
+        scaling = scaling[:, :, *(None,) * (x.ndim - 2)]
         x = x * scaling
         d_cvx = self.activation_cvx.derivative(x)  # type: ignore
         d_ccv = self.activation_ccv.derivative(x)  # type: ignore
@@ -241,3 +246,32 @@ class WCvxConvNet(nn.Module):
         slopes_0 = ((y2 - y1) / (x2 - x1)).view(1, -1, 1, 1)
 
         self.activation_cvx.slopes += slopes_0 / self.get_mu()
+
+
+if __name__ == "__main__":
+    import json
+    from copy import deepcopy
+
+    cfg1 = json.load(open("../training/config.json"))
+
+    cfg1["spline_scaling"]["x_min"] = cfg1["noise_range"][0]
+    cfg1["spline_scaling"]["x_max"] = cfg1["noise_range"][1]
+    cfg1["spline_scaling"]["num_activations"] = cfg1["conv_layer"]["kwargs"][
+        "num_channels"
+    ][-1]
+
+    cfg2 = deepcopy(cfg1)
+    cfg2["conv_layer"]["class"] = "MultiConv2d"
+    del cfg2["conv_layer"]["kwargs"]["orientations"]
+
+    net1 = WCvxConvNet(
+        param_conv_layer=cfg1["conv_layer"],
+        param_spline_activation=cfg1["spline_activation"],
+        param_spline_scaling=cfg1["spline_scaling"],
+    )
+
+    net2 = WCvxConvNet(
+        param_conv_layer=cfg2["conv_layer"],
+        param_spline_activation=cfg2["spline_activation"],
+        param_spline_scaling=cfg2["spline_scaling"],
+    )

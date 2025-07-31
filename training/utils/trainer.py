@@ -180,11 +180,15 @@ class Trainer:
 
             data = data.to(self.device)
 
-            sigma = torch.empty((data.shape[0], 1, 1, 1), device=data.device).uniform_(
+            sigma = torch.empty(data.shape[0], device=data.device).uniform_(
                 self.noise_range[0], self.noise_range[1]
             )
 
-            noise = sigma / 255 * torch.randn(data.shape, device=data.device)
+            noise = (
+                sigma[:, *(None,) * (data.ndim - 1)]
+                / 255
+                * torch.randn(data.shape, device=data.device)
+            )
 
             noisy_data = data + noise
 
@@ -236,10 +240,13 @@ class Trainer:
             for batch_idx, data in enumerate(tbar_val):
                 data = data.to(self.device)
 
-                sigma = self.noise_val * torch.ones(
-                    (data.shape[0], 1, 1, 1), device=data.device
+                sigma = self.noise_val * torch.ones(data.shape[0], device=data.device)
+
+                noise = (
+                    sigma[:, *(None,) * (data.ndim - 1)]
+                    / 255
+                    * torch.randn(data.shape, device=data.device)
                 )
-                noise = sigma / 255 * torch.randn(data.shape, device=data.device)
                 noisy_data = data + noise
 
                 noisy_data, noise = noisy_data.to(self.device), noise.to(self.device)

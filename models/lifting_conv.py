@@ -154,7 +154,7 @@ class SE2LiftMultiConv2d(nn.Module):
     def get_filters(self) -> Tensor:
         assert isinstance(self.dirac, Tensor)
         i, j = self.padding_total, self.padding_total + self.eff_kernel_size
-        return self.convolution(self.dirac)[:, :, i:j, i:j]
+        return self.convolution(self.dirac)[:, :, 0, i:j, i:j]
 
     def forward(self, x: Tensor):
         return self.convolution(x)
@@ -163,19 +163,21 @@ class SE2LiftMultiConv2d(nn.Module):
         assert isinstance(self.L, Tensor)
         x = x / torch.sqrt(self.L)  # [B,Cin,H,W]
         w = self._sample_filter_stack()  # [NOr,Cout,Cin,kH,kH]
-        w = w.view(-1, *w.shape[-3:])  # [NOr*Cout,Cin,kH,kH]
+        w = w.transpose(0, 1)  # [Cout,NOr,Cin,kH,kH]
+        w = w.reshape(-1, *w.shape[-3:])  # [Cout*NOr,Cin,kH,kH]
         y = F.conv2d(
             x, w, bias=None, padding=(self.eff_kernel_size // 2)
-        )  # [B,NOr*Cout,H,W]
-        # y = y.reshape(x.size(0), self.orientations, -1, *y.shape[-2:])
-        return y  # [B,NOr,Cout,H,W]
+        )  # [B,Cout*NOr,H,W]
+        y = y.reshape(x.size(0), -1, self.orientations, *y.shape[-2:])
+        return y  # [B,Cout,NOr,H,W]
 
     def transpose(self, x: Tensor):
         assert isinstance(self.L, Tensor)
-        x = x / torch.sqrt(self.L)  # [B,Nor,Cout,H,W]
-        x = x.reshape(x.size(0), -1, x.size(-2), x.size(-1))  # [B,Nor*Cout,H,W]
+        x = x / torch.sqrt(self.L)  # [B,Cout,NOr,H,W]
+        x = x.reshape(x.size(0), -1, x.size(-2), x.size(-1))  # [B,Cout*NOr,H,W]
         w = self._sample_filter_stack()  # [NOr,Cout,Cin,kH,kH]
-        w = w.view(-1, *w.shape[-3:])  # [NOr*Cout,Cin,kH,kH]
+        w = w.transpose(0, 1)  # [NCout,NOr,Cin,kH,kH]
+        w = w.reshape(-1, *w.shape[-3:])  # [Cout*NOr,Cin,kH,kH]
         y = F.conv_transpose2d(x, w, bias=None, padding=(self.eff_kernel_size // 2))
         return y  # [B,Cin,H,W]
 
@@ -212,6 +214,10 @@ class SE2LiftMultiConv2d(nn.Module):
         s2 = f"kernel_size={self.size_kernels}"
         s3 = f"orientations={self.orientations}"
         return f"{self.__class__.__name__}({s1}, {s2}, {s3})"
+
+
+def number_kernel_params(kernel_sizes: tuple[int, ...]) -> int:
+    return sum(int(rotation_mask(sz).sum().item()) for sz in kernel_sizes)
 
 
 if __name__ == "__main__":

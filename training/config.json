@@ -18,7 +18,7 @@
                 5,
                 5
             ],
-            "orientations": 1
+            "orientations": 8
         }
     },
     "noise_range": [
@@ -38,11 +38,16 @@
     "spline_activation": {
         "num_knots": 101,
         "x_max": 0.1,
-        "x_min": -0.1
+        "x_min": -0.1,
+        "slope_min": 0,
+        "slope_max": 1,
+        "antisymmetric": true,
+        "num_activations": 1
     },
     "spline_scaling": {
         "init": 5.0,
-        "num_knots": 11
+        "num_knots": 11,
+        "clamp": false
     },
     "train_dataloader": {
         "batch_size": 128,
